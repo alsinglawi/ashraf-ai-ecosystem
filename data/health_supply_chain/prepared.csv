@@ -1,0 +1,6 @@
+date,facility_name,item_name,quantity_received,quantity_dispensed,stock_on_hand,lead_time_days
+2025-01-01,Clinic A,Amoxicillin,120,100,50,7
+2025-01-02,Clinic B,Paracetamol,300,250,100,5
+2025-01-03,Clinic C,Oral Rehydration Salts,200,180,60,6
+2025-01-04,Clinic A,Vitamin A,150,140,30,8
+2025-01-05,Clinic B,Gloves,500,400,200,4
