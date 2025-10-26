@@ -1,264 +1,201 @@
-# src/dashboard/app.py
-"""
-Streamlit dashboard for Ashraf AI Ecosystem
-- Upload or view supply chain data
-- Display model predictions vs actual
-- Interactive filtering (facility, item, date)
-- CSV upload, download & model retraining
-- Optional AI assistant
-Run: streamlit run src/dashboard/app.py
-"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pathlib import Path
+import plotly.express as px
 import joblib
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.ensemble import RandomForestRegressor
 import os
-import time
+from datetime import datetime, timedelta
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import openai
 
-# ---------- SETUP ----------
-RAW_PATH = Path("data/health_supply_chain/raw.csv")
-PREP_PATH = Path("data/health_supply_chain/prepared.csv")
-MODEL_PATH = Path("models/demand_forecast_model.pkl")
-MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+# -----------------------------
+# PAGE CONFIG
+# -----------------------------
+st.set_page_config(
+    page_title="Health Supply Chain Forecast Dashboard",
+    layout="wide",
+    page_icon="📦",
+)
 
-# Optional assistant
-USE_ASSISTANT = bool(os.getenv("OPENAI_API_KEY"))
-assistant_available = False
-if USE_ASSISTANT:
-    try:
-        from src.ai_core.assistant_api import AssistantAPI
-        assistant = AssistantAPI()
-        assistant_available = True
-    except Exception as e:
-        st.write("Assistant import failed:", e)
+st.markdown(
+    """
+    <style>
+    .main {background-color: #f9f9fb;}
+    .stApp {
+        background-color: #ffffff;
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 0 12px rgba(0, 0, 0, 0.05);
+    }
+    footer {
+        text-align: center;
+        font-size: 14px;
+        color: gray;
+        padding-top: 20px;
+    }
+    .metric-box {
+        background-color: #f1f3f6;
+        border-radius: 12px;
+        padding: 10px;
+        text-align: center;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-st.set_page_config(page_title="Ashraf AI Dashboard", layout="wide")
-st.title("📊 Ashraf AI — Supply Chain Intelligence Dashboard")
+# -----------------------------
+# DATA UPLOAD / LOAD
+# -----------------------------
+st.title("📊 Health Supply Chain Forecast Dashboard")
+st.caption("Monitor and forecast medicine demand in health facilities")
 
-# ---------- LOAD DATA ----------
-@st.cache_data(show_spinner=False)
-def load_data():
-    path = PREP_PATH if PREP_PATH.exists() else RAW_PATH
-    if not path.exists():
-        return pd.DataFrame()
-    df = pd.read_csv(path, parse_dates=["date"])
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-    return df
-
-@st.cache_resource
-def load_model():
-    if MODEL_PATH.exists():
-        return joblib.load(MODEL_PATH)
-    return None
-
-df_local = load_data()
-model = load_model()
-
-# ---------- UPLOAD CSV ----------
-st.sidebar.header("📤 Upload or Train Model")
-
-uploaded_file = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
-if uploaded_file is not None:
-    try:
-        df_uploaded = pd.read_csv(uploaded_file, parse_dates=["date"])
-        df_uploaded.columns = [c.strip().lower().replace(" ", "_") for c in df_uploaded.columns]
-        st.sidebar.success(f"✅ Uploaded: {uploaded_file.name}")
-        df = df_uploaded.copy()
-    except Exception as e:
-        st.sidebar.error(f"Error reading file: {e}")
-        df = df_local.copy()
+uploaded_file = st.file_uploader("📁 Upload your CSV file", type=["csv"])
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
 else:
-    df = df_local.copy()
+    # Default small demo dataset
+    data = {
+        "date": pd.date_range("2024-01-01", periods=60),
+        "facility": np.random.choice(["Clinic A", "Clinic B"], 60),
+        "item": np.random.choice(["Amoxicillin", "Paracetamol"], 60),
+        "quantity_dispensed": np.random.randint(50, 200, 60),
+        "quantity_received": np.random.randint(60, 250, 60),
+        "stock_on_hand": np.random.randint(100, 500, 60),
+        "lead_time_days": np.random.randint(2, 12, 60),
+    }
+    df = pd.DataFrame(data)
 
-if df.empty:
-    st.error("No data found. Upload a CSV file or place one in data/health_supply_chain/.")
-    st.stop()
+df["date"] = pd.to_datetime(df["date"])
+df["day_of_week"] = df["date"].dt.dayofweek
+df["month"] = df["date"].dt.month
 
-# ---------- SIDEBAR FILTERS ----------
-with st.sidebar:
-    st.header("🔍 Filters & Actions")
-    facilities = ["All"] + sorted(df["facility_name"].unique().tolist())
-    items = ["All"] + sorted(df["item_name"].unique().tolist())
-    facility = st.selectbox("Facility", facilities)
-    item = st.selectbox("Item", items)
-
-    st.write("---")
-    st.write("📅 Date range")
-    min_date, max_date = df["date"].min(), df["date"].max()
-    drange = st.date_input("Select range", [min_date, max_date])
-    if len(drange) == 2:
-        start_date, end_date = pd.to_datetime(drange[0]), pd.to_datetime(drange[1])
-    else:
-        start_date, end_date = min_date, max_date
-
-# ---------- FILTER DATA ----------
-mask = (df["date"] >= start_date) & (df["date"] <= end_date)
-if facility != "All":
-    mask &= (df["facility_name"] == facility)
-if item != "All":
-    mask &= (df["item_name"] == item)
-df_view = df.loc[mask].copy()
-
-# ---------- TRAIN NEW MODEL BUTTON ----------
-st.sidebar.write("---")
-st.sidebar.subheader("🧠 Train or Update Model")
-
-if st.sidebar.button("🚀 Train Model from Current Data"):
-    if not df.empty:
-        with st.spinner("Training model... please wait ⏳"):
-            progress = st.progress(0)
-            time.sleep(0.5)
-            df_train = df.copy()
-
-            # Feature engineering
-            df_train["day_of_week"] = df_train["date"].dt.dayofweek
-            df_train["month"] = df_train["date"].dt.month
-            df_train = df_train.sort_values(["facility_name", "item_name", "date"])
-            df_train["prev_dispensed_1"] = (
-                df_train.groupby(["facility_name", "item_name"])["quantity_dispensed"]
-                .shift(1)
-                .fillna(0)
-            )
-            df_train["fill_rate"] = np.where(
-                df_train["quantity_received"] > 0,
-                df_train["quantity_dispensed"] / df_train["quantity_received"],
-                0.0,
-            )
-
-            feature_cols = [
-                "quantity_received", "stock_on_hand", "lead_time_days",
-                "day_of_week", "month", "prev_dispensed_1", "fill_rate"
-            ]
-            df_train = df_train.dropna(subset=["quantity_dispensed"])
-            X = df_train[feature_cols].fillna(0)
-            y = df_train["quantity_dispensed"]
-
-            # Train
-            model_new = RandomForestRegressor(
-                n_estimators=150, random_state=42, n_jobs=-1
-            )
-            model_new.fit(X, y)
-            progress.progress(80)
-
-            # Evaluate
-            preds = model_new.predict(X)
-            mae = mean_absolute_error(y, preds)
-            rmse = np.sqrt(mean_squared_error(y, preds))
-
-            # Save
-            joblib.dump(model_new, MODEL_PATH)
-            progress.progress(100)
-            st.success(f"✅ Model retrained and saved!\nMAE: {mae:.2f} | RMSE: {rmse:.2f}")
-            model = model_new
-    else:
-        st.warning("No data available to train a model.")
-
-# ---------- MAIN CONTENT ----------
-col1, col2 = st.columns([2, 1])
-
-# --- Left: Data Preview ---
+# -----------------------------
+# FILTERS
+# -----------------------------
+col1, col2, col3 = st.columns(3)
 with col1:
-    st.subheader("📄 Data Preview")
-    st.dataframe(df_view.sort_values(["date"]).reset_index(drop=True), height=300)
-
-    st.subheader("📈 Summary Statistics")
-    if not df_view.empty:
-        st.write(df_view[["quantity_received", "quantity_dispensed", "stock_on_hand"]].describe().T)
-    else:
-        st.info("No filtered rows to summarize.")
-
-# --- Right: Metrics ---
-compare = None
+    facility = st.selectbox("🏥 Select Facility", ["All"] + sorted(df["facility"].unique().tolist()))
 with col2:
-    st.subheader("🤖 Model Status")
-    if model is None:
-        st.error("No trained model found.")
-    else:
-        st.success("Model ready ✅")
+    item = st.selectbox("💊 Select Item", ["All"] + sorted(df["item"].unique().tolist()))
+with col3:
+    date_range = st.date_input(
+        "📅 Date Range",
+        [df["date"].min(), df["date"].max()],
+        min_value=df["date"].min(),
+        max_value=df["date"].max(),
+    )
 
-    if model is not None and not df_view.empty:
-        df_feat = df_view.copy()
-        df_feat["day_of_week"] = df_feat["date"].dt.dayofweek
-        df_feat["month"] = df_feat["date"].dt.month
-        df_feat = df_feat.sort_values(["facility_name", "item_name", "date"])
-        df_feat["prev_dispensed_1"] = df_feat.groupby(["facility_name", "item_name"])["quantity_dispensed"].shift(1).fillna(0)
-        df_feat["fill_rate"] = np.where(
-            df_feat["quantity_received"] > 0,
-            df_feat["quantity_dispensed"] / df_feat["quantity_received"],
-            0.0,
-        )
+# Apply filters
+df_filtered = df.copy()
+if facility != "All":
+    df_filtered = df_filtered[df_filtered["facility"] == facility]
+if item != "All":
+    df_filtered = df_filtered[df_filtered["item"] == item]
+df_filtered = df_filtered[(df_filtered["date"] >= pd.to_datetime(date_range[0])) &
+                          (df_filtered["date"] <= pd.to_datetime(date_range[1]))]
 
-        feature_cols = [
-            "quantity_received", "stock_on_hand", "lead_time_days",
-            "day_of_week", "month", "prev_dispensed_1", "fill_rate"
-        ]
-        X = df_feat[feature_cols].fillna(0)
-        y = df_feat["quantity_dispensed"].values
-        preds = model.predict(X)
+# -----------------------------
+# MODEL TRAINING
+# -----------------------------
+target = "quantity_dispensed"
+features = ["quantity_received", "stock_on_hand", "lead_time_days", "day_of_week", "month"]
 
-        mae = mean_absolute_error(y, preds)
-        rmse = np.sqrt(mean_squared_error(y, preds))
+X = df_filtered[features]
+y = df_filtered[target]
+
+st.subheader("⚙️ Model Training & Forecasting")
+
+if st.button("Train Model"):
+    model = RandomForestRegressor(random_state=42, n_estimators=200)
+    model.fit(X, y)
+    joblib.dump(model, "rf_model.pkl")
+    st.success("✅ Model trained and saved!")
+
+# -----------------------------
+# LOAD MODEL
+# -----------------------------
+if os.path.exists("rf_model.pkl"):
+    model = joblib.load("rf_model.pkl")
+
+    preds = model.predict(X)
+    mae = mean_absolute_error(y, preds)
+    rmse = np.sqrt(mean_squared_error(y, preds))
+
+
+    # Display metrics
+    st.write("### 📏 Model Performance")
+    mcol1, mcol2 = st.columns(2)
+    with mcol1:
         st.metric("MAE", f"{mae:.2f}")
+    with mcol2:
         st.metric("RMSE", f"{rmse:.2f}")
 
-        compare = pd.DataFrame({
-            "date": df_feat["date"].dt.date,
-            "actual": y,
-            "predicted": np.round(preds, 2)
-        }).reset_index(drop=True)
-        st.write("Actual vs Predicted (first 10)")
-        st.table(compare.head(10))
+    # Actual vs Predicted Table
+    df_results = df_filtered.copy()
+    df_results["predicted"] = preds
+    st.dataframe(df_results[["date", "facility", "item", "quantity_dispensed", "predicted"]].tail(10))
 
-        # Download predictions
-        csv = compare.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Predictions as CSV",
-            data=csv,
-            file_name="predictions_filtered.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("Need both model and filtered data to compute metrics.")
-
-# ---------- VISUALIZATION ----------
-st.write("---")
-st.subheader("📊 Visualization: Actual vs Predicted (Filtered)")
-
-if model is not None and not df_view.empty and compare is not None:
-    import altair as alt
-    df_plot = compare.copy()
-    c = (
-        alt.Chart(df_plot)
-        .transform_fold(["actual", "predicted"], as_=["series", "value"])
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("value:Q", title="Quantity Dispensed"),
-            color=alt.Color("series:N", title="Series"),
-            tooltip=["date:T", "series:N", "value:Q"]
-        )
-        .properties(width=900, height=350)
+    # -----------------------------
+    # CHART
+    # -----------------------------
+    st.write("### 📈 Actual vs Predicted Over Time")
+    fig = px.line(
+        df_results,
+        x="date",
+        y=["quantity_dispensed", "predicted"],
+        labels={"value": "Quantity", "variable": "Series"},
+        title="Actual vs Predicted Quantities Over Time",
+        markers=True,
     )
-    st.altair_chart(c, use_container_width=True)
-else:
-    st.info("No predictions to show.")
+    fig.update_traces(line=dict(width=3))
+    st.plotly_chart(fig, use_container_width=True)
 
-# ---------- ASSISTANT ----------
-st.write("---")
-st.subheader("💬 Ask the Assistant (optional)")
+    # -----------------------------
+    # FORECAST NEXT 30 DAYS
+    # -----------------------------
+    st.write("### 🔮 30-Day Forecast")
+    if st.button("Generate 30-Day Forecast"):
+        future_dates = [df_filtered["date"].max() + timedelta(days=i) for i in range(1, 31)]
+        future_df = pd.DataFrame({
+            "date": future_dates,
+            "quantity_received": np.random.randint(60, 250, 30),
+            "stock_on_hand": np.random.randint(100, 500, 30),
+            "lead_time_days": np.random.randint(2, 12, 30),
+        })
+        future_df["day_of_week"] = [d.dayofweek for d in future_df["date"]]
+        future_df["month"] = [d.month for d in future_df["date"]]
+        future_preds = model.predict(future_df[features])
+        future_df["forecasted_demand"] = future_preds
 
-if assistant_available:
-    q = st.text_area("Ask Ashraf AI:", value="How can I improve forecasting accuracy?")
-    if st.button("Ask"):
-        with st.spinner("Thinking..."):
-            try:
-                reply = assistant.respond(q)
-            except Exception as e:
-                reply = f"Assistant error: {e}"
-        st.write(reply)
-else:
-    st.info("Assistant not available. Set OPENAI_API_KEY in .env to enable it.")
+        st.dataframe(future_df[["date", "forecasted_demand"]])
+
+        fig_future = px.line(
+            future_df,
+            x="date",
+            y="forecasted_demand",
+            title="30-Day Demand Forecast",
+            markers=True,
+        )
+        st.plotly_chart(fig_future, use_container_width=True)
+
+# -----------------------------
+# ASSISTANT (OPTIONAL)
+# -----------------------------
+if os.getenv("OPENAI_API_KEY"):
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+    st.subheader("💬 Assistant")
+    user_input = st.text_area("Ask me anything about this data or forecast:")
+    if user_input:
+        st.info("Thinking...")
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": user_input}],
+        )
+        st.success(response.choices[0].message.content)
+
+# -----------------------------
+# FOOTER
+# -----------------------------
+st.markdown("<footer>🚀 Ashraf AI Ecosystem © 2025</footer>", unsafe_allow_html=True)
