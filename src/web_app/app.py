@@ -71,6 +71,31 @@ df["date"] = pd.to_datetime(df["date"])
 df["day_of_week"] = df["date"].dt.dayofweek
 df["month"] = df["date"].dt.month
 
+# --- Sidebar Data Summary ---
+st.sidebar.markdown("## 📊 Data Overview")
+
+# Compute summary stats
+num_facilities = df["facility"].nunique() if "facility" in df.columns else 0
+num_items = df["item"].nunique() if "item" in df.columns else 0
+date_min = df["date"].min().strftime("%Y-%m-%d") if "date" in df.columns else "N/A"
+date_max = df["date"].max().strftime("%Y-%m-%d") if "date" in df.columns else "N/A"
+num_records = len(df)
+
+# Display in elegant style
+st.sidebar.markdown(
+    f"""
+    <div style="background-color:#f8f9fa; padding:15px; border-radius:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <h4 style="color:#0d6efd; margin-bottom:10px;">📦 Dataset Summary</h4>
+        <p><strong>Records:</strong> {num_records:,}</p>
+        <p><strong>Facilities:</strong> {num_facilities}</p>
+        <p><strong>Items:</strong> {num_items}</p>
+        <p><strong>Date Range:</strong><br>{date_min} → {date_max}</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+
 # -----------------------------
 # FILTERS
 # -----------------------------
