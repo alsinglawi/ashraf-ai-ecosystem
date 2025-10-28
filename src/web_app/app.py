@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from hybrid_forecast import train_hybrid_model, evaluate_model
 import openai
 
 # -----------------------------
@@ -132,11 +133,23 @@ y = df_filtered[target]
 
 st.subheader("⚙️ Model Training & Forecasting")
 
-if st.button("Train Model"):
-    model = RandomForestRegressor(random_state=42, n_estimators=200)
-    model.fit(X, y)
-    joblib.dump(model, "rf_model.pkl")
-    st.success("✅ Model trained and saved!")
+if st.button("🚀 Train Hybrid Forecast Model"):
+    with st.spinner("Training Prophet + Random Forest hybrid model..."):
+        forecast, prophet_model, rf_model = train_hybrid_model(
+            df, date_col=date_col, y_col=target_col, periods=30
+        )
+        st.success("Model trained successfully!")
+
+        mae, rmse = evaluate_model(df, forecast)
+        st.metric("MAE", f"{mae:.2f}")
+        st.metric("RMSE", f"{rmse:.2f}")
+
+        # Chart
+        fig = px.line(forecast, x="ds", y=["yhat", "hybrid_yhat"],
+                      labels={"ds": "Date", "value": "Forecast"},
+                      title="Hybrid Forecast (Prophet + Random Forest)")
+        st.plotly_chart(fig, use_container_width=True)
+
 
 # -----------------------------
 # LOAD MODEL
