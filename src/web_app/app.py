@@ -7,7 +7,6 @@ import os
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from hybrid_forecast import train_hybrid_model, evaluate_model
 import openai
 
 # -----------------------------
@@ -35,7 +34,7 @@ st.markdown(
         color: gray;
         padding-top: 20px;
     }
-    .metric-box {
+    .meric-box {
         background-color: #f1f3f6;
         border-radius: 12px;
         padding: 10px;
@@ -44,6 +43,7 @@ st.markdown(
     </style>
     """,
     unsafe_allow_html=True,
+
 )
 
 # -----------------------------
@@ -53,11 +53,47 @@ st.title("📊 Health Supply Chain Forecast Dashboard")
 st.caption("Monitor and forecast medicine demand in health facilities")
 
 uploaded_file = st.file_uploader("📁 Upload your CSV file", type=["csv"])
+
+# Define canonical expected names
+expected_columns = {
+    "date": ["date", "transaction_date", "recorded_date"],
+    "facility": ["facility", "facility_name", "clinic", "site"],
+    "item": ["item", "product", "medicine", "drug_name"],
+    "quantity_dispensed": ["quantity_dispensed", "dispensed", "qty_dispensed", "used_quantity"],
+    "quantity_received": ["quantity_received", "received", "qty_received", "incoming_stock"],
+    "stock_on_hand": ["stock_on_hand", "stock", "available_stock", "current_stock"],
+    "lead_time_days": ["lead_time_days", "leadtime", "delivery_leadtime", "lt_days"]
+}
+
+def auto_map_columns(df, expected_map):
+    """Try to auto-map user CSV columns to expected names"""
+    new_cols = {}
+    lower_cols = {c.lower().strip(): c for c in df.columns}
+    for target, variants in expected_map.items():
+        for v in variants:
+            if v.lower() in lower_cols:
+                new_cols[lower_cols[v.lower()]] = target
+                break
+    return df.rename(columns=new_cols)
+
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
+    df = auto_map_columns(df, expected_columns)
+    missing_cols = [col for col in expected_columns if col not in df.columns]
+
+    if missing_cols:
+        st.warning(f"⚠️ Missing columns {missing_cols}. Demo data will be loaded instead.")
+        df = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=60),
+            "facility": np.random.choice(["Clinic A", "Clinic B"], 60),
+            "item": np.random.choice(["Amoxicillin", "Paracetamol"], 60),
+            "quantity_dispensed": np.random.randint(50, 200, 60),
+            "quantity_received": np.random.randint(60, 250, 60),
+            "stock_on_hand": np.random.randint(100, 500, 60),
+            "lead_time_days": np.random.randint(2, 12, 60),
+        })
 else:
-    # Default small demo dataset
-    data = {
+    df = pd.DataFrame({
         "date": pd.date_range("2024-01-01", periods=60),
         "facility": np.random.choice(["Clinic A", "Clinic B"], 60),
         "item": np.random.choice(["Amoxicillin", "Paracetamol"], 60),
@@ -65,10 +101,11 @@ else:
         "quantity_received": np.random.randint(60, 250, 60),
         "stock_on_hand": np.random.randint(100, 500, 60),
         "lead_time_days": np.random.randint(2, 12, 60),
-    }
-    df = pd.DataFrame(data)
+    })
 
-df["date"] = pd.to_datetime(df["date"])
+# Clean date and derive features
+df["date"] = pd.to_datetime(df["date"], errors="coerce")
+df.dropna(subset=["date"], inplace=True)
 df["day_of_week"] = df["date"].dt.dayofweek
 df["month"] = df["date"].dt.month
 
@@ -133,23 +170,11 @@ y = df_filtered[target]
 
 st.subheader("⚙️ Model Training & Forecasting")
 
-if st.button("🚀 Train Hybrid Forecast Model"):
-    with st.spinner("Training Prophet + Random Forest hybrid model..."):
-        forecast, prophet_model, rf_model = train_hybrid_model(
-            df, date_col=date_col, y_col=target_col, periods=30
-        )
-        st.success("Model trained successfully!")
-
-        mae, rmse = evaluate_model(df, forecast)
-        st.metric("MAE", f"{mae:.2f}")
-        st.metric("RMSE", f"{rmse:.2f}")
-
-        # Chart
-        fig = px.line(forecast, x="ds", y=["yhat", "hybrid_yhat"],
-                      labels={"ds": "Date", "value": "Forecast"},
-                      title="Hybrid Forecast (Prophet + Random Forest)")
-        st.plotly_chart(fig, use_container_width=True)
-
+if st.button("Train Model"):
+    model = RandomForestRegressor(random_state=42, n_estimators=200)
+    model.fit(X, y)
+    joblib.dump(model, "rf_model.pkl")
+    st.success("✅ Model trained and saved!")
 
 # -----------------------------
 # LOAD MODEL
@@ -160,7 +185,6 @@ if os.path.exists("rf_model.pkl"):
     preds = model.predict(X)
     mae = mean_absolute_error(y, preds)
     rmse = np.sqrt(mean_squared_error(y, preds))
-
 
     # Display metrics
     st.write("### 📏 Model Performance")
